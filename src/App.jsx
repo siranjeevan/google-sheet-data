@@ -1,10 +1,10 @@
-import CrudModule from './components/CrudModule';
+import TrackerApp from './components/TrackerApp';
 import './App.css';
 
 function App() {
   return (
-    <div className="app">
-      <CrudModule />
+    <div className="App">
+      <TrackerApp />
     </div>
   );
 }

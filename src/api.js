@@ -1,7 +1,7 @@
 
 // Update this URL with your NEW deployed Web App URL (must end in /exec)
 // Example: "https://script.google.com/macros/s/AKfycbx.../exec"
-const API_URL = "https://script.google.com/macros/s/AKfycbz6nzAjsExslIePnaB0Fx99lxrugM1d11PhNVcHCKN_M0Z_MQFY2lBElX_e_K9LWcnRDg/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbzYyn2KJZICNrgDSCQpBFOH2Xi5cEylyd8aKExHk8i_zZ5Ndu6nJ2esLtVWDTS_0TrCrg/exec";
 
 const handleResponse = async (response) => {
   const text = await response.text();
@@ -26,13 +26,23 @@ const getUrl = (action) => {
 };
 
 // Map Sheet Headers to App Keys
+// Map Sheet Headers to App Keys
 const normalizeData = (data) => {
   if (!Array.isArray(data)) return [];
   return data.map(item => ({
     recordId: item.recordId || item['Record ID'] || item['record id'],
     date: item.date || item['Date'] || item['date'],
     userName: item.userName || item['User Name'] || item['Name'] || item['user name'],
-    sessionNo: item.sessionNo || item['Session No'] || item['Session'] || item['session no']
+    sessionNo: item.sessionNo || item['Session No'] || item['Session'] || item['session no'],
+    startTime: item.startTime || item['Start Time'] || item['start time'],
+    endTime: item.endTime || item['End Time'] || item['end time'],
+    duration: item.duration || item['Duration'] || item['duration'],
+    workDescription: item.workDescription || item['Work Description'] || item['work description'],
+    status: item.status || item['Status'] || item['status'],
+    project: item.project || item['Project'] || item['project'],
+    category: item.category || item['category'] || item['Category'],
+    approvedState: item.approvedState || item['Approved State'] || item['Approved'] || item['approved state'],
+    approvedBy: item.approvedBy || item['Approved By'] || item['approved by']
   }));
 };
 
@@ -51,22 +61,27 @@ export const fetchData = async () => {
 
 export const createRecord = async (data) => {
   try {
-    // Send data as URL parameters to ensure GAS picks it up correctly
-    // regardless of CORS preflight issues with body parsing
+    // Explicitly construct params to avoid any object spread weirdness
+    const params = new URLSearchParams();
+    params.append('action', 'create');
 
-    // Create a copy so we don't mutate input
-    const cleanData = { ...data };
-
-    // Remove recordId so GAS generates a new one. 
-    // If we leave it as null/undefined, URLSearchParams converts it to "null"/"undefined" string.
-    delete cleanData.recordId;
-
-    const params = new URLSearchParams({
-      ...cleanData,
-      action: 'create'
-    });
+    // Check and append each field efficiently
+    if (data.date) params.append('date', data.date);
+    if (data.userName) params.append('userName', data.userName);
+    if (data.sessionNo) params.append('sessionNo', data.sessionNo);
+    if (data.startTime) params.append('startTime', data.startTime);
+    if (data.endTime) params.append('endTime', data.endTime);
+    if (data.duration) params.append('duration', data.duration);
+    if (data.workDescription) params.append('workDescription', data.workDescription);
+    if (data.status) params.append('status', data.status);
+    if (data.project) params.append('project', data.project);
+    if (data.category) params.append('category', data.category);
+    if (data.approvedState) params.append('approvedState', data.approvedState);
+    if (data.approvedBy) params.append('approvedBy', data.approvedBy);
 
     const urlWithParams = `${API_URL}${API_URL.includes('?') ? '&' : '?'}${params.toString()}`;
+
+    console.log("Creating Record URL:", urlWithParams); // Debugging
 
     // Use POST with text/plain to avoid CORS strictness, but data is in URL
     const response = await fetch(urlWithParams, {

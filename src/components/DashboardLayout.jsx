@@ -1,0 +1,65 @@
+
+import React from 'react';
+
+const DashboardLayout = ({ children, userProfile = { name: 'Jeevith', role: 'Developer' } }) => {
+    return (
+        <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+            {/* Top Navigation Bar */}
+            <header style={{
+                backgroundColor: 'var(--card-bg)',
+                borderBottom: '1px solid var(--border-color)',
+                padding: '1rem 2rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                boxShadow: 'var(--shadow-sm)',
+                position: 'sticky',
+                top: 0,
+                zIndex: 10
+            }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                    <div style={{
+                        width: '32px', height: '32px',
+                        background: 'linear-gradient(135deg, var(--primary-color), var(--accent-color))',
+                        borderRadius: '8px'
+                    }}></div>
+                    <h1 style={{ fontSize: '1.25rem', fontWeight: 700, margin: 0, color: 'var(--text-primary)' }}>
+                        WorkTracker
+                    </h1>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                    <div style={{ textAlign: 'right', display: 'none', md: 'block' }}>
+                        <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>{userProfile.name}</div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{userProfile.role}</div>
+                    </div>
+                    <div style={{
+                        width: '40px', height: '40px',
+                        borderRadius: '50%',
+                        backgroundColor: 'var(--secondary-color)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        color: 'var(--text-secondary)', fontWeight: 600
+                    }}>
+                        {userProfile.name.charAt(0)}
+                    </div>
+                </div>
+            </header>
+
+            {/* Main Content Area */}
+            <main style={{
+                flex: 1,
+                width: '100%',
+                maxWidth: '1200px',
+                margin: '0 auto',
+                padding: '2rem',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '2rem'
+            }}>
+                {children}
+            </main>
+        </div>
+    );
+};
+
+export default DashboardLayout;
