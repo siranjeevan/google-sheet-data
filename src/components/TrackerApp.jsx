@@ -79,12 +79,15 @@ const TrackerApp = () => {
         });
     }, [sessions]);
 
+
+
     const loadData = async () => {
-        if (!userName) return; // Don't load if no user
+        if (!userName) return;
+
+
+
         setLoading(true);
         try {
-            const data = await fetchData();
-
             // Filter: Current User AND Matches Today's Date (Strict Manual System Date)
             const now = new Date();
             const year = now.getFullYear();
@@ -92,21 +95,25 @@ const TrackerApp = () => {
             const day = String(now.getDate()).padStart(2, '0');
             const todayStr = `${year}-${month}-${day}`;
 
-            console.log("System Date Filter:", todayStr);
+            console.log("Fetching Data for:", { userName, date: todayStr });
 
-            const mySessions = data.filter(s => {
-                // Ensure we filter by the correct user name (now fixed in API)
-                if (s.userName !== userName) return false;
-                if (!s.date) return false;
-
-                // Robust Match: Handle "2026-01-06" OR "2026-01-06T..." -> "2026-01-06"
-                const recordDateStr = String(s.date).split('T')[0];
-                return recordDateStr === todayStr;
+            // Pass filters to backend API
+            const data = await fetchData({
+                userName: userName,
+                date: todayStr
             });
 
-            console.log("All Data:", data.length);
-            console.log("Today Data:", mySessions.length);
+            // Backend now handles the filtering, so we can use data directly.
+            // But we still apply a safety filter just in case the backend code 
+            // wasn't updated/deployed yet, to prevent showing wrong data.
+            const mySessions = data.filter(s => {
+                if (s.userName && s.userName !== userName) return false;
+                // Note: We don't strictly filter date here to allow for slight timezone diffs 
+                // if backend returns them, but ideally backend handles it.
+                return true;
+            });
 
+            console.log("Sessions Loaded:", mySessions.length);
             setSessions(mySessions);
         } catch (e) {
             console.error("Failed to load", e);
@@ -231,7 +238,21 @@ const TrackerApp = () => {
     };
 
     const handleUpdateConfirm = async (updatedData) => {
+        // TEST MODE: Local Update Only
+        // If we are forcing test data, we should update local state to visualize changes
+        // checking if loadData is hijacked (simple check: if we have test data loaded)
+        // For now, let's just assume if it has no valid recordId (or if we want to support it generally)
+
+        // Simpler: Just try API, if it fails (due to fake ID), fallback to local? 
+        // Or better: Explicitly handle test updates to show the UI behavior.
+
         try {
+            // Check if we are in the "Test Data" state (hardcoded for this session)
+            // We can check if the recordId looks like our test IDs (undefined or specific)
+            const isTestRecord = !updatedData.recordId || String(updatedData.recordId).startsWith('test-');
+
+
+
             await updateRecord(updatedData);
             setEditSession(null);
             setIsEditModalOpen(false);
@@ -243,6 +264,8 @@ const TrackerApp = () => {
     };
 
     const handleDeleteConfirm = async (recordId) => {
+
+
         try {
             await deleteRecord(recordId);
             setEditSession(null);
@@ -290,6 +313,8 @@ const TrackerApp = () => {
                     }}>
                         <span style={{ color: 'var(--accent-color)' }}>📅</span>
                         {systemDate}
+
+
                     </div>
 
                     {currentView === 'tracker' ? (

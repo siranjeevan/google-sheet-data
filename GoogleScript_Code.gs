@@ -1,5 +1,11 @@
 // ==========================================
-// Google Apps Script - Attendance Tracker Backend
+// Google Apps Script - Attendance Tracker Backend (Monthly Sheets System)
+// ==========================================
+// CORE REQUIREMENTS IMPLEMENTATION:
+// 1. Smart Write: Auto-detects Month/Year from date, finds/creates specific tab (e.g. "February 2026").
+// 2. Read Everywhere: Scans ALL tabs (excluding Config) to build unified history.
+// 3. Sheet Scope: Manages tabs within this single file only.
+// 4. Safety: Appends only, consistent headers, data integrity.
 // ==========================================
 
 function doGet(e) {
@@ -12,107 +18,162 @@ function doPost(e) {
 
 function handleRequest(e) {
   var lock = LockService.getScriptLock();
-  lock.tryLock(10000); // Wait up to 10s for lock
+  lock.tryLock(10000); // 1. Safety: Transaction Lock
 
   try {
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
     
-    // 1. Parse Parameters
+    // Parse Request
     var requestData = {};
-    
-    // Check URL parameters
-    if (e.parameter) {
-      requestData = e.parameter;
-    }
-    
-    // Check POST body (JSON)
+    if (e.parameter) requestData = e.parameter;
     if (e.postData && e.postData.contents) {
       try {
         var body = JSON.parse(e.postData.contents);
-        for (var key in body) {
-          requestData[key] = body[key];
-        }
-      } catch (jsonErr) {
-        // If body isn't JSON, ignore
-      }
+        for (var key in body) requestData[key] = body[key];
+      } catch (jsonErr) {}
     }
 
     var action = requestData.action;
 
     // ==========================================
-    // READ (With Filtering)
+    // READ ACTION (Global Scan)
     // ==========================================
+    // Requirement 2: Scans every sheet, excludes utility, combines rows.
     if (!action || action === 'read') {
-      // Use getDisplayValues() to get the formatted strings (e.g. "2026-01-06", "14:30")
-      var data = sheet.getDataRange().getDisplayValues();
-      var rows = []; // Start empty
+      var allSheets = ss.getSheets();
+      var allRows = [];
       
-      // Filter Parameters
-      var filterDate = requestData.date;        // e.g. "2026-01-06"
-      var filterUser = requestData.userName;    // e.g. "Jeevith"
+      for (var s = 0; s < allSheets.length; s++) {
+        var currentSheet = allSheets[s];
+        var sheetName = currentSheet.getName();
 
-      // Iterate BACKWARDS to find recent matches faster
-      // Check limits if needed (e.g. max 50 rows) to prevent massive payloads
-      for (var i = data.length - 1; i >= 1; i--) {
-        var row = data[i];
+        // Exclude specific utility/config sheets if they exist
+        if (sheetName === 'Config' || sheetName === 'Settings' || sheetName === 'Template') continue;
         
-        // Strict Filter: Both Date and User must match if provided
-        var rowDate = row[1];     // Column B
-        var rowUser = row[2];     // Column C
+        var data = currentSheet.getDataRange().getDisplayValues();
         
-         // If filters are provided, check them
-        if (filterDate && rowDate !== filterDate) continue;
-        if (filterUser && rowUser !== filterUser) continue;
-
-        var obj = {};
-        // Map row by index to specific keys for frontend
-        obj.recordId = row[0];
-        obj.date = row[1];
-        obj.userName = row[2]; 
-        obj.sessionNo = row[3]; 
-        obj.startTime = row[4];
-        obj.endTime = row[5];
-        obj.duration = row[6];
-        obj.workDescription = row[7];
-        obj.project = row[8];
-        obj.category = row[9];
-        obj.status = row[10];
-        obj.approvedState = row[11];
-        obj.approvedBy = row[12];
-        
-        rows.push(obj);
-
-        // Optional: Soft limit to prevent timeouts on large valid ranges
-        // if (rows.length >= 100) break; 
+        // Loop rows (Skip Header at index 0)
+        for (var i = 1; i < data.length; i++) {
+          var row = data[i];
+          
+          // Validation: legitimate data rows must have a numeric ID in Col A
+          if (!row[0] || isNaN(parseInt(row[0]))) continue;
+          
+          var obj = {
+            recordId: row[0],
+            date: row[1],
+            userName: row[2],
+            sessionNo: row[3],
+            startTime: row[4],
+            endTime: row[5],
+            duration: row[6],
+            workDescription: row[7],
+            project: row[8],
+            category: row[9],
+            status: row[10],
+            approvedState: row[11],
+            approvedBy: row[12],
+            _sheetName: sheetName // Traceability
+          };
+          allRows.push(obj);
+        }
       }
-      
-      // Since we iterated backwards, the list is Newest -> Oldest. 
-      // If frontend expects Oldest -> Newest (1..2..3), reverse it?
-      // Actually frontend history usually shows newest on top. 
-      // Let's return as is (Newest First) which matches previous behavior.
+
+      // Sort: Newest First (Global Sort by ID)
+      allRows.sort(function(a, b) {
+        return parseInt(b.recordId) - parseInt(a.recordId);
+      });
+
+      // Apply Filters
+      var rows = [];
+      var filterDate = requestData.date;
+      var filterUser = requestData.userName;
+
+      for (var i = 0; i < allRows.length; i++) {
+        var r = allRows[i];
+        if (filterDate && r.date !== filterDate) continue;
+        if (filterUser && r.userName !== filterUser) continue;
+        rows.push(r);
+      }
       
       return responseJSON(rows);
     }
 
     // ==========================================
-    // CREATE
+    // CREATE ACTION (Smart Write)
     // ==========================================
+    // Requirement 1 & 3: Extract Month/Year, Find/Create Tab, Append.
     if (action === 'create') {
-      // Auto-Increment ID
-      var data = sheet.getDataRange().getValues();
+      var newDate = requestData.date; // e.g. "2026-02-01"
+      if (!newDate) return responseError("Date is required");
+
+      // A. Global ID Generation (Scan all sheets to find max ID)
+      var allSheets = ss.getSheets();
       var maxId = 0;
-      for (var i = 1; i < data.length; i++) {
-        var pid = parseInt(data[i][0]);
-        if (!isNaN(pid) && pid > maxId) maxId = pid;
+      for (var s = 0; s < allSheets.length; s++) {
+        var d = allSheets[s].getDataRange().getValues();
+        for (var r = 1; r < d.length; r++) {
+          var pid = parseInt(d[r][0]);
+          if (!isNaN(pid) && pid > maxId) maxId = pid;
+        }
       }
       var newId = maxId + 1;
 
-      // Prepare Row Data (Strict Order)
+      // B. Determine Target Sheet Name
+      // Parse "YYYY-MM-DD" -> "Month YYYY"
+      var parts = newDate.split('-');
+      // Note: Month is 0-indexed in JS Date
+      var dateObj = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+      var monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+      var targetSheetName = monthNames[dateObj.getMonth()] + " " + dateObj.getFullYear(); // e.g. "February 2026"
+
+      // C. Check Exists OR Create
+      var targetSheet = ss.getSheetByName(targetSheetName);
+      if (!targetSheet) {
+        targetSheet = ss.insertSheet(targetSheetName);
+        // Requirement 5: Header structure consistent
+        targetSheet.appendRow(["ID", "Date", "User", "Session", "Start", "End", "Duration", "Description", "Project", "Category", "Status", "Approved State", "Approved By"]);
+        
+        // Header Styling
+        var hRange = targetSheet.getRange(1, 1, 1, 13);
+        hRange.setFontWeight("bold")
+              .setBackground("#f1f5f9")
+              .setBorder(true, true, true, true, true, true)
+              .setHorizontalAlignment("center");
+      }
+
+      // D. Date Separator Logic (Specific to this sheet)
+      // Visual grouping within the monthly sheet
+      var lastRow = targetSheet.getLastRow();
+      var shouldAddSeparator = false;
+      if (lastRow > 1) {
+         var lastRowVals = targetSheet.getRange(lastRow, 1, 1, 2).getDisplayValues()[0]; 
+         var lastDate = lastRowVals[1];
+         if (lastDate !== newDate) shouldAddSeparator = true;
+      } else {
+         shouldAddSeparator = true; // First data row (after header)
+      }
+
+      if (shouldAddSeparator) {
+           var formattedTx = Utilities.formatDate(dateObj, Session.getScriptTimeZone(), "MMM d - EEEE");
+           targetSheet.appendRow([formattedTx]);
+           var sRow = targetSheet.getLastRow();
+           var rng = targetSheet.getRange(sRow, 1, 1, 13);
+           rng.merge()
+              .setBackground("#f1f5f9")
+              .setFontColor("#1e293b")
+              .setFontWeight("bold")
+              .setFontSize(20)
+              .setHorizontalAlignment("center")
+              .setVerticalAlignment("middle");
+      }
+
+      // E. Append Data
       var newRow = [
         newId,
         requestData.date || '',
-        requestData.userName || '',    // Column C (Name)
-        requestData.sessionNo || '',   // Column D (Session)
+        requestData.userName || '',
+        requestData.sessionNo || '',
         requestData.startTime || '',
         requestData.endTime || '',
         requestData.duration || '',
@@ -124,53 +185,55 @@ function handleRequest(e) {
         requestData.approvedBy || ''
       ];
 
-      sheet.appendRow(newRow);
+      targetSheet.appendRow(newRow);
 
-      // Formatting
-      var lastRow = sheet.getLastRow();
-      var range = sheet.getRange(lastRow, 1, 1, 13);
-      range.setFontFamily("Arial");
-      range.setFontSize(10);
-      range.setHorizontalAlignment("center");
-      range.setVerticalAlignment("middle");
-      range.setWrap(true);
+      // Row Formatting
+      var lastRowIdx = targetSheet.getLastRow();
+      var range = targetSheet.getRange(lastRowIdx, 1, 1, 13);
+      range.setFontFamily("Arial")
+           .setFontSize(10)
+           .setHorizontalAlignment("center")
+           .setVerticalAlignment("middle")
+           .setWrap(true);
 
-      return responseJSON({ status: 'success', message: 'Record created', recordId: newId });
+      return responseJSON({ status: 'success', message: 'Record created in ' + targetSheetName, recordId: newId });
     }
 
     // ==========================================
-    // UPDATE
+    // UPDATE ACTION
     // ==========================================
     if (action === 'update') {
       var idToUpdate = parseInt(requestData.recordId);
-      var data = sheet.getDataRange().getValues();
-      var rowIndex = -1;
+      var allSheets = ss.getSheets();
+      var foundSheet = null;
+      var foundRowIndex = -1;
 
-      // Find row by ID
-      for (var i = 1; i < data.length; i++) {
-        if (parseInt(data[i][0]) === idToUpdate) {
-          rowIndex = i + 1; // 1-based index
-          break;
+      // Search Global
+      for (var s = 0; s < allSheets.length; s++) {
+        var sh = allSheets[s];
+        if (sh.getName() === 'Config') continue;
+
+        var data = sh.getDataRange().getValues();
+        for (var i = 1; i < data.length; i++) {
+          if (parseInt(data[i][0]) === idToUpdate) {
+            foundSheet = sh;
+            foundRowIndex = i + 1;
+            break;
+          }
         }
+        if (foundSheet) break;
       }
 
-      if (rowIndex === -1) {
-        return responseError('Record ID not found');
-      }
+      if (!foundSheet) return responseError('Record ID not found');
 
-      // Update columns (Example: Update Status or End Time)
-      // Note: This simple update only updates provided fields
-      
-      // Helper to set cell if value exists
+      // Helper
       function setCell(col, val) {
-        if (val !== undefined && val !== null) {
-           sheet.getRange(rowIndex, col).setValue(val);
-        }
+        if (val !== undefined && val !== null) foundSheet.getRange(foundRowIndex, col).setValue(val);
       }
 
       setCell(2, requestData.date);
-      setCell(3, requestData.userName);  // Column C (Name)
-      setCell(4, requestData.sessionNo); // Column D (Session)
+      setCell(3, requestData.userName);
+      setCell(4, requestData.sessionNo);
       setCell(5, requestData.startTime);
       setCell(6, requestData.endTime);
       setCell(7, requestData.duration);
@@ -185,25 +248,33 @@ function handleRequest(e) {
     }
 
     // ==========================================
-    // DELETE
+    // DELETE ACTION
     // ==========================================
     if (action === 'delete') {
-      var idToDelete = parseInt(requestData.recordId);
-      var data = sheet.getDataRange().getValues();
-      var rowIndex = -1;
+      var idToDel = parseInt(requestData.recordId);
+      var allSheets = ss.getSheets();
+      var foundSheet = null;
+      var foundRowIndex = -1;
 
-      for (var i = 1; i < data.length; i++) {
-        if (parseInt(data[i][0]) === idToDelete) {
-          rowIndex = i + 1;
-          break;
+      // Search Global
+      for (var s = 0; s < allSheets.length; s++) {
+        var sh = allSheets[s];
+        if (sh.getName() === 'Config') continue;
+        
+        var data = sh.getDataRange().getValues();
+        for (var i = 1; i < data.length; i++) {
+          if (parseInt(data[i][0]) === idToDel) {
+            foundSheet = sh;
+            foundRowIndex = i + 1;
+            break;
+          }
         }
+        if (foundSheet) break;
       }
 
-      if (rowIndex === -1) {
-         return responseError('Record ID not found');
-      }
+      if (!foundSheet) return responseError('Record ID not found');
 
-      sheet.deleteRow(rowIndex);
+      foundSheet.deleteRow(foundRowIndex);
       return responseJSON({ status: 'success', message: 'Record deleted' });
     }
 
@@ -216,11 +287,8 @@ function handleRequest(e) {
   }
 }
 
-// Helpers
 function responseJSON(data) {
-  return ContentService
-    .createTextOutput(JSON.stringify(data))
-    .setMimeType(ContentService.MimeType.JSON);
+  return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
 }
 
 function responseError(msg) {

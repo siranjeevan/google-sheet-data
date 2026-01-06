@@ -1,4 +1,3 @@
-
 import React, { useMemo } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry } from 'ag-grid-community';
@@ -8,25 +7,86 @@ ModuleRegistry.registerModules([AllCommunityModule]);
 
 const HistoryGrid = ({ sessions, onEdit }) => {
 
+    // Process Data: Sort by Date Desc + Insert Header Rows
+    const rowData = useMemo(() => {
+        if (!sessions) return [];
+
+        // 1. Sort by Date (Desc) then Session (Desc)
+        const sorted = [...sessions].sort((a, b) => {
+            const dateA = new Date(a.date).getTime();
+            const dateB = new Date(b.date).getTime();
+            if (dateA !== dateB) return dateB - dateA; // Newest date first
+            return (parseInt(b.sessionNo) || 0) - (parseInt(a.sessionNo) || 0);
+        });
+
+        // 2. Insert Headers
+        const processed = [];
+        let currentDate = null;
+
+        sorted.forEach(row => {
+            // Robust date string extraction (Handle T separator if present)
+            const rowDate = row.date ? String(row.date).split('T')[0] : 'Unknown Date';
+
+            if (rowDate !== currentDate) {
+                // Create formatted date string "Jan 7 - Wednesday"
+                const d = new Date(rowDate);
+                // "Jan 7 - Wednesday" format construction
+                const options = { month: 'short', day: 'numeric' };
+                const weekday = d.toLocaleDateString('en-US', { weekday: 'long' });
+                const datePart = d.toLocaleDateString('en-US', options);
+
+                const label = isNaN(d.getTime())
+                    ? rowDate
+                    : `${datePart} - ${weekday}`;
+
+                processed.push({ isHeader: true, dateLabel: label });
+                currentDate = rowDate;
+            }
+            processed.push(row);
+        });
+
+        return processed;
+    }, [sessions]);
+
+    // Full Width Row Logic
+    const isFullWidthRow = (params) => {
+        return params.rowNode.data && params.rowNode.data.isHeader;
+    };
+
+    const fullWidthCellRenderer = (params) => {
+        return (
+            <div style={{
+                width: '100%',
+                height: '100%',
+                fontWeight: 700,
+                fontSize: '0.9rem',
+                color: 'var(--text-primary)',
+                background: 'var(--surface-2)',
+                padding: '0 1.5rem',
+                display: 'flex',
+                alignItems: 'center',
+                borderBottom: '1px solid var(--border-subtle)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em'
+            }}>
+                📅 {params.data.dateLabel}
+            </div>
+        );
+    };
+
     // Column Definitions
     const colDefs = useMemo(() => [
         {
             field: 'sessionNo',
             headerName: 'Session',
             width: 90,
-            sortable: true,
-            sort: 'asc', // Default Sort 1, 2, 3, 4
-            comparator: (valueA, valueB) => {
-                return (parseInt(valueA) || 0) - (parseInt(valueB) || 0);
-            },
-            // filter removed
+            sortable: false, // Sorting handled pre-grid
             cellStyle: { display: 'flex', alignItems: 'center', justifyContent: 'center' }
         },
         {
             field: 'startTime',
             headerName: 'Start Time',
             width: 110,
-            sortable: true,
             cellStyle: { display: 'flex', alignItems: 'center', justifyContent: 'center' },
             valueFormatter: (p) => {
                 if (!p.value) return '-';
@@ -79,7 +139,7 @@ const HistoryGrid = ({ sessions, onEdit }) => {
             minWidth: 200,
             wrapText: true,
             autoHeight: true,
-            cellStyle: { display: 'flex', alignItems: 'center' } // Keep Left
+            cellStyle: { display: 'flex', alignItems: 'center' }
         },
         {
             field: 'project',
@@ -160,20 +220,19 @@ const HistoryGrid = ({ sessions, onEdit }) => {
                 </button>
             ),
             sortable: false,
-            filter: false
         }
     ], []);
 
     // Default Col Def
     const defaultColDef = useMemo(() => ({
         resizable: true,
-        sortable: true,
-        filter: false, // REMOVE FILTER COMPLETELY (and its icon)
+        sortable: false, // Disable default sorting to preserve group order
+        filter: false,
         suppressMenu: true,
-        cellStyle: { display: 'flex', alignItems: 'center' } // Vertical Center
+        cellStyle: { display: 'flex', alignItems: 'center' }
     }), []);
 
-    // Empty State (if needed, though Grid handles empty rows gracefully-ish)
+    // Empty State
     if (!sessions || sessions.length === 0) {
         return (
             <div style={{
@@ -195,7 +254,7 @@ const HistoryGrid = ({ sessions, onEdit }) => {
     return (
         <div style={{
             marginTop: '0.5rem',
-            height: 'calc(100vh - 220px)', // Precise fit accounting for header + padding + nav
+            height: 'calc(100vh - 220px)',
             width: '100%',
             backgroundColor: 'white',
             borderRadius: '12px',
@@ -204,15 +263,17 @@ const HistoryGrid = ({ sessions, onEdit }) => {
             boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)'
         }}>
             <AgGridReact
-                rowData={sessions}
+                rowData={rowData} // Use Processed Data
                 columnDefs={colDefs}
                 defaultColDef={defaultColDef}
                 rowHeight={52}
                 headerHeight={48}
                 pagination={true}
-                paginationPageSize={10}
-                paginationPageSizeSelector={[10, 20, 50, 100]}
+                paginationPageSize={20}
                 context={{ onEdit }}
+                // Header Row Config
+                isFullWidthRow={isFullWidthRow}
+                fullWidthCellRenderer={fullWidthCellRenderer}
             />
         </div>
     );
