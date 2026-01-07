@@ -86,8 +86,47 @@ const NeonRing = ({ value, max, label, colorStops }) => {
     );
 };
 
-const TimerCard = ({ onStart, onEnd, activeSession }) => {
+const TimerCard = ({ onStart, onEnd, onPause, onResume, activeSession, reminderInterval, setReminderInterval }) => {
+    // We need to alias props for the inner logic if we used 'props' in previous step, 
+    // but actually I used 'props.setReminderInterval' in previous edit which might be error if props is not defined.
+    // Let's correct that in next step or assume I can access it if I passed props.
+    // Actually, in the previous step I used `props.setReminderInterval` effectively assuming `props` existed in scope or implied.
+    // React functional components destructure usually.
+    // Let's try to fix the previous code block via THIS tool call by redefining the whole component signature and the place where I used it?
+    // No, I can't overwrite easily. 
+    // Let's just destructure it here.
+    // Wait, the previous edit used `if (props.setReminderInterval)`. 'props' is NOT defined in `const TimerCard = ({...})`.
+    // I made a mistake in the previous edit. I need to fix that line.
+
+    const props = { setReminderInterval }; // Hack to make previous code work? No, that's messy.
+    // Better: I will re-write the destructuring line and ALSO fix the usage in one go if possible, 
+    // or I will use multi_replace to fix both.
+
+    // Actually, I can just define 'props' variable here mapping to the destructured arg.
+    const internalProps = { setReminderInterval };
+
     const [elapsed, setElapsed] = useState(0);
+    const [isManualEntry, setIsManualEntry] = useState(false);
+    const [manualTime, setManualTime] = useState('');
+
+    const handleManualSubmit = () => {
+        if (!manualTime) return;
+
+        const now = new Date();
+        const [h, m] = manualTime.split(':').map(Number);
+
+        const startDate = new Date();
+        startDate.setHours(h, m, 0, 0);
+
+        // Validation: Cannot start in future
+        if (startDate > now) {
+            alert("Start time cannot be in the future");
+            return;
+        }
+
+        onStart(startDate);
+        setIsManualEntry(false);
+    };
 
     useEffect(() => {
         let interval = null;
@@ -95,14 +134,30 @@ const TimerCard = ({ onStart, onEnd, activeSession }) => {
             const updateTimer = () => {
                 const now = new Date();
                 const start = new Date(activeSession.startTimeFull || activeSession.startTimeStr);
+
                 if (!isNaN(start.getTime())) {
-                    const diffSeconds = Math.floor((now - start) / 1000);
+                    let diffSeconds = Math.floor((now - start) / 1000);
+
+                    // Subtract total accumulated pause time
+                    const totalPaused = activeSession.totalPausedSeconds || 0;
+                    diffSeconds -= totalPaused;
+
+                    // If currently paused, subtract current pause duration too (freeze the timer)
+                    if (activeSession.lastPauseTime) {
+                        const pauseStart = new Date(activeSession.lastPauseTime);
+                        const currentPause = Math.floor((now - pauseStart) / 1000);
+                        diffSeconds -= currentPause;
+                    }
+
                     setElapsed(diffSeconds > 0 ? diffSeconds : 0);
                 } else {
-                    setElapsed(prev => prev + 1);
+                    setElapsed(0);
                 }
             };
+
             updateTimer();
+            // Even if paused, we run interval to keep UI reactive if we want to show "Paused for X min" later
+            // But for now, it just keeps 'elapsed' stable.
             interval = setInterval(updateTimer, 1000);
         } else {
             setElapsed(0);
@@ -123,7 +178,7 @@ const TimerCard = ({ onStart, onEnd, activeSession }) => {
 
     return (
         <div style={{
-            padding: '2rem 1rem',
+            padding: '1rem 1rem',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
@@ -132,7 +187,7 @@ const TimerCard = ({ onStart, onEnd, activeSession }) => {
         }}>
 
             {/* Date Header */}
-            <div style={{ marginBottom: '3.5rem', textAlign: 'center' }}>
+            <div style={{ marginBottom: '1.5rem', textAlign: 'center' }}>
                 <h2 style={{
                     margin: '0 0 0.8rem 0',
                     fontSize: '0.85rem',
@@ -141,7 +196,7 @@ const TimerCard = ({ onStart, onEnd, activeSession }) => {
                     color: 'var(--text-secondary)',
                     fontWeight: 600
                 }}>
-                    {activeSession ? 'Tracking Time' : 'Ready to Start'}
+                    {activeSession ? (activeSession.lastPauseTime ? 'Session Paused' : 'Tracking Time') : 'Ready to Start'}
                 </h2>
                 <div style={{
                     display: 'inline-flex',
@@ -158,67 +213,308 @@ const TimerCard = ({ onStart, onEnd, activeSession }) => {
                 </div>
             </div>
 
+
+
+            {/* Reminder Selector (Only when not active) */}
+            {/* Reminder Selector (Always Visible) */}
+            <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
+                <label style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', fontWeight: 500 }}>
+                    Remind me:
+                </label>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    {/* Presets in SECONDS */}
+                    <select
+                        value={[0, 60, 300, 600, 1800, 3600].includes(reminderInterval) ? reminderInterval : -1}
+                        onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            if (setReminderInterval) setReminderInterval(val);
+                        }}
+                        style={{
+                            padding: '0.4rem 0.8rem',
+                            borderRadius: '6px',
+                            border: '1px solid var(--border-color)',
+                            color: 'var(--text-primary)',
+                            fontSize: '0.9rem',
+                            outline: 'none',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        <option value={0}>Never</option>
+                        <option value={60}>Test (1 min)</option>
+                        <option value={300}>Every 5m</option>
+                        <option value={600}>Every 10m</option>
+                        <option value={1800}>Every 30m</option>
+                        <option value={3600}>Every 1h</option>
+                        <option value={-1}>Custom...</option>
+                    </select>
+
+                    {/* Custom Input (H:M:S) */}
+                    {(![0, 60, 300, 600, 1800, 3600].includes(reminderInterval)) && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                            {/* Hours */}
+                            <input
+                                type="number"
+                                min="0"
+                                placeholder="H"
+                                value={reminderInterval > 0 ? Math.floor(reminderInterval / 3600) : ''}
+                                onChange={(e) => {
+                                    const h = parseInt(e.target.value) || 0;
+                                    const currentSec = reminderInterval > 0 ? reminderInterval : 0;
+                                    const m = Math.floor((currentSec % 3600) / 60);
+                                    const s = currentSec % 60;
+                                    setReminderInterval(h * 3600 + m * 60 + s);
+                                }}
+                                style={{
+                                    width: '36px',
+                                    padding: '0.4rem',
+                                    borderRadius: '6px',
+                                    border: '1px solid var(--border-color)',
+                                    fontSize: '0.9rem',
+                                    textAlign: 'center'
+                                }}
+                            />
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>h</span>
+
+                            {/* Minutes */}
+                            <input
+                                type="number"
+                                min="0"
+                                max="59"
+                                placeholder="M"
+                                value={reminderInterval > 0 ? Math.floor((reminderInterval % 3600) / 60) : ''}
+                                onChange={(e) => {
+                                    const m = parseInt(e.target.value) || 0;
+                                    const currentSec = reminderInterval > 0 ? reminderInterval : 0;
+                                    const h = Math.floor(currentSec / 3600);
+                                    const s = currentSec % 60;
+                                    setReminderInterval(h * 3600 + m * 60 + s);
+                                }}
+                                style={{
+                                    width: '36px',
+                                    padding: '0.4rem',
+                                    borderRadius: '6px',
+                                    border: '1px solid var(--border-color)',
+                                    fontSize: '0.9rem',
+                                    textAlign: 'center'
+                                }}
+                            />
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>m</span>
+
+                            {/* Seconds */}
+                            <input
+                                type="number"
+                                min="0"
+                                max="59"
+                                placeholder="S"
+                                value={reminderInterval > 0 ? (reminderInterval % 60) : ''}
+                                onChange={(e) => {
+                                    const s = parseInt(e.target.value) || 0;
+                                    const currentSec = reminderInterval > 0 ? reminderInterval : 0;
+                                    const h = Math.floor(currentSec / 3600);
+                                    const m = Math.floor((currentSec % 3600) / 60);
+                                    setReminderInterval(h * 3600 + m * 60 + s);
+                                }}
+                                style={{
+                                    width: '36px',
+                                    padding: '0.4rem',
+                                    borderRadius: '6px',
+                                    border: '1px solid var(--border-color)',
+                                    fontSize: '0.9rem',
+                                    textAlign: 'center'
+                                }}
+                            />
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>s</span>
+                        </div>
+                    )}
+                </div>
+            </div>
+
             {/* Professional Rings */}
             <div style={{
                 display: 'flex',
                 justifyContent: 'center',
                 flexWrap: 'wrap',
                 gap: '1.5rem',
-                marginBottom: '4rem'
+                marginBottom: '2rem'
             }}>
                 <NeonRing value={h} max={12} label="Hours" colorStops={ringColors.h} />
                 <NeonRing value={m} max={60} label="Minutes" colorStops={ringColors.m} />
                 <NeonRing value={s} max={60} label="Seconds" colorStops={ringColors.s} />
             </div>
 
-            {/* Button - Clean Professional Blue */}
-            {!activeSession ? (
-                <button
-                    onClick={onStart}
-                    style={{
-                        background: 'var(--primary-color)', /* Deep Navy */
-                        color: 'white',
-                        border: 'none',
-                        padding: '1rem 3.5rem',
-                        borderRadius: '8px',
-                        fontSize: '1.1rem',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        boxShadow: '0 4px 6px -1px rgba(15, 23, 42, 0.2)',
-                        transition: 'all 0.2s ease',
-                        display: 'flex', alignItems: 'center', gap: '0.8rem'
-                    }}
-                    onMouseEnter={e => e.currentTarget.style.backgroundColor = 'var(--primary-hover)'}
-                    onMouseLeave={e => e.currentTarget.style.backgroundColor = 'var(--primary-color)'}
-                >
-                    <span style={{ fontSize: '1.2rem' }}>▸</span> Start Session
-                </button>
+            {/* Button Area */}
+            {activeSession ? (
+                <div style={{ display: 'flex', gap: '1rem' }}>
+                    {/* Pause/Resume Button */}
+                    {activeSession.lastPauseTime ? (
+                        <button
+                            onClick={onResume}
+                            style={{
+                                background: '#f59e0b', // Amber 500
+                                color: 'white',
+                                border: 'none',
+                                padding: '1rem 2rem',
+                                borderRadius: '8px',
+                                fontSize: '1.1rem',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                                transition: 'all 0.2s',
+                                boxShadow: 'var(--shadow-sm)',
+                                display: 'flex', alignItems: 'center', gap: '0.5rem'
+                            }}
+                        >
+                            <span>▶ Resume</span>
+                        </button>
+                    ) : (
+                        <button
+                            onClick={onPause}
+                            style={{
+                                background: '#fbbf24', // Amber 400
+                                color: '#78350f', // Amber 900
+                                border: 'none',
+                                padding: '1rem 2rem',
+                                borderRadius: '8px',
+                                fontSize: '1.1rem',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                                transition: 'all 0.2s',
+                                boxShadow: 'var(--shadow-sm)',
+                                display: 'flex', alignItems: 'center', gap: '0.5rem'
+                            }}
+                        >
+                            <span>⏸ Pause</span>
+                        </button>
+                    )}
+
+                    <button
+                        onClick={onEnd}
+                        style={{
+                            background: 'white',
+                            color: '#ef4444',
+                            border: '1px solid #ef4444',
+                            padding: '1rem 2rem',
+                            borderRadius: '8px',
+                            fontSize: '1.1rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            transition: 'all 0.2s',
+                            boxShadow: 'var(--shadow-sm)'
+                        }}
+                        onMouseEnter={e => {
+                            e.currentTarget.style.backgroundColor = '#ef4444';
+                            e.currentTarget.style.color = 'white';
+                        }}
+                        onMouseLeave={e => {
+                            e.currentTarget.style.backgroundColor = 'white';
+                            e.currentTarget.style.color = '#ef4444';
+                        }}
+                    >
+                        Stop Session
+                    </button>
+                </div>
             ) : (
-                <button
-                    onClick={onEnd}
-                    style={{
-                        background: 'white',
-                        color: '#ef4444',
-                        border: '1px solid #ef4444',
-                        padding: '1rem 3rem',
-                        borderRadius: '8px',
-                        fontSize: '1.1rem',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        transition: 'all 0.2s',
-                        boxShadow: 'var(--shadow-sm)'
-                    }}
-                    onMouseEnter={e => {
-                        e.currentTarget.style.backgroundColor = '#ef4444';
-                        e.currentTarget.style.color = 'white';
-                    }}
-                    onMouseLeave={e => {
-                        e.currentTarget.style.backgroundColor = 'white';
-                        e.currentTarget.style.color = '#ef4444';
-                    }}
-                >
-                    Stop Session
-                </button>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', width: '100%' }}>
+                    {!isManualEntry ? (
+                        <>
+                            <button
+                                onClick={() => onStart()}
+                                style={{
+                                    background: 'var(--primary-color)',
+                                    color: 'white',
+                                    border: 'none',
+                                    padding: '1rem 3.5rem',
+                                    borderRadius: '8px',
+                                    fontSize: '1.1rem',
+                                    fontWeight: 600,
+                                    cursor: 'pointer',
+                                    boxShadow: '0 4px 6px -1px rgba(15, 23, 42, 0.2)',
+                                    transition: 'all 0.2s ease',
+                                    display: 'flex', alignItems: 'center', gap: '0.8rem'
+                                }}
+                                onMouseEnter={e => e.currentTarget.style.backgroundColor = 'var(--primary-hover)'}
+                                onMouseLeave={e => e.currentTarget.style.backgroundColor = 'var(--primary-color)'}
+                            >
+                                <span style={{ fontSize: '1.2rem' }}>▸</span> Start Session
+                            </button>
+
+                            <button
+                                onClick={() => {
+                                    const now = new Date();
+                                    const timeStr = now.toTimeString().slice(0, 5);
+                                    setManualTime(timeStr);
+                                    setIsManualEntry(true);
+                                }}
+                                style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    color: 'var(--text-secondary)',
+                                    fontSize: '0.9rem',
+                                    cursor: 'pointer',
+                                    textDecoration: 'underline',
+                                    opacity: 0.8
+                                }}
+                            >
+                                Started Earlier?
+                            </button>
+                        </>
+                    ) : (
+                        <div style={{
+                            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem',
+                            background: 'white', padding: '1.5rem', borderRadius: '12px',
+                            boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)',
+                            animation: 'fadeIn 0.2s ease-out'
+                        }}>
+                            <h3 style={{ margin: 0, fontSize: '1rem', color: 'var(--text-primary)' }}>When did you start?</h3>
+
+                            <input
+                                type="time"
+                                value={manualTime}
+                                onChange={(e) => setManualTime(e.target.value)}
+                                style={{
+                                    padding: '0.5rem 1rem',
+                                    borderRadius: '6px',
+                                    border: '1px solid var(--border-color)',
+                                    fontSize: '1.2rem',
+                                    textAlign: 'center',
+                                    outline: 'none',
+                                    color: 'var(--text-primary)'
+                                }}
+                            />
+
+                            <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                <button
+                                    onClick={() => setIsManualEntry(false)}
+                                    style={{
+                                        padding: '0.5rem 1rem',
+                                        background: '#f1f5f9',
+                                        color: '#64748b',
+                                        border: 'none',
+                                        borderRadius: '6px',
+                                        cursor: 'pointer',
+                                        fontWeight: 500
+                                    }}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleManualSubmit}
+                                    disabled={!manualTime}
+                                    style={{
+                                        padding: '0.5rem 1rem',
+                                        background: 'var(--primary-color)',
+                                        color: 'white',
+                                        border: 'none',
+                                        borderRadius: '6px',
+                                        cursor: 'pointer',
+                                        fontWeight: 500
+                                    }}
+                                >
+                                    Confirm Start
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
             )}
 
         </div>

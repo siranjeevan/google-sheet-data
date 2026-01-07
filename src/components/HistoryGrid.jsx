@@ -1,11 +1,123 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry } from 'ag-grid-community';
 
 // Register all Community features
 ModuleRegistry.registerModules([AllCommunityModule]);
 
-const HistoryGrid = ({ sessions, onEdit }) => {
+const ActionMenu = ({ data, onEdit, onDelete }) => {
+    const [isOpen, setIsOpen] = useState(false);
+    const menuRef = useRef(null);
+
+    // Close on click outside
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (menuRef.current && !menuRef.current.contains(event.target)) {
+                setIsOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
+
+    const handleViewDetails = () => {
+        onEdit(data);
+        setIsOpen(false);
+    };
+
+    const handleRemove = () => {
+        onDelete(data.recordId);
+        setIsOpen(false);
+    };
+
+    return (
+        <div style={{ position: 'relative', display: 'flex', justifyContent: 'center' }} ref={menuRef}>
+            <button
+                onClick={() => setIsOpen(!isOpen)}
+                style={{
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: '1.2rem',
+                    color: '#64748b',
+                    padding: '4px 8px',
+                    borderRadius: '4px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center'
+                }}
+                onMouseEnter={e => e.target.style.backgroundColor = '#f1f5f9'}
+                onMouseLeave={e => e.target.style.backgroundColor = 'transparent'}
+            >
+                ⋮
+            </button>
+
+            {isOpen && (
+                <div style={{
+                    position: 'fixed', // Use fixed to avoid clipping in grid cells
+                    right: '40px', // Adjust based on grid layout approximation or use popper.js for robustness
+                    // Simple hack: Since this is inside a relative parent in a grid cell, fixed might be tricky without coords.
+                    // Let's try absolute with high z-index, but grid overflow hidden might clip it.
+                    // AG Grid cells often clip overflow.
+                    // BETTER APPROACH: absolute right: 0, top: 100% zIndex 9999
+                    // IF overflow is issue, might need portal, but for simple request let's try absolute first.
+                    // If clipped, we might need a different styling strategy.
+                    // EDIT: standard absolute dropdown
+                    position: 'absolute',
+                    top: '80%',
+                    right: '10px',
+                    backgroundColor: 'white',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: '8px',
+                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+                    zIndex: 9999,
+                    minWidth: '140px',
+                    overflow: 'hidden'
+                }}>
+                    <button
+                        onClick={handleViewDetails}
+                        style={{
+                            display: 'block',
+                            width: '100%',
+                            textAlign: 'left',
+                            padding: '0.75rem 1rem',
+                            background: 'white',
+                            border: 'none',
+                            borderBottom: '1px solid #f1f5f9',
+                            cursor: 'pointer',
+                            fontSize: '0.9rem',
+                            color: '#0f172a',
+                            fontWeight: 500
+                        }}
+                        onMouseEnter={e => e.target.style.backgroundColor = '#f8fafc'}
+                        onMouseLeave={e => e.target.style.backgroundColor = 'white'}
+                    >
+                        View Details
+                    </button>
+                    <button
+                        onClick={handleRemove}
+                        style={{
+                            display: 'block',
+                            width: '100%',
+                            textAlign: 'left',
+                            padding: '0.75rem 1rem',
+                            background: 'white',
+                            border: 'none',
+                            cursor: 'pointer',
+                            fontSize: '0.9rem',
+                            color: '#ef4444',
+                            fontWeight: 500
+                        }}
+                        onMouseEnter={e => e.target.style.backgroundColor = '#fef2f2'}
+                        onMouseLeave={e => e.target.style.backgroundColor = 'white'}
+                    >
+                        Remove
+                    </button>
+                </div>
+            )}
+        </div>
+    );
+};
+
+const HistoryGrid = ({ sessions, onEdit, onDelete }) => {
 
     // Process Data: Sort by Date Desc + Insert Header Rows
     const rowData = useMemo(() => {
@@ -16,7 +128,7 @@ const HistoryGrid = ({ sessions, onEdit }) => {
             const dateA = new Date(a.date).getTime();
             const dateB = new Date(b.date).getTime();
             if (dateA !== dateB) return dateB - dateA; // Newest date first
-            return (parseInt(b.sessionNo) || 0) - (parseInt(a.sessionNo) || 0);
+            return (parseInt(a.sessionNo) || 0) - (parseInt(b.sessionNo) || 0); // Session 1, 2, 3...
         });
 
         // 2. Insert Headers
@@ -139,7 +251,10 @@ const HistoryGrid = ({ sessions, onEdit }) => {
             minWidth: 200,
             wrapText: true,
             autoHeight: true,
-            cellStyle: { display: 'flex', alignItems: 'center' }
+            cellStyle: { display: 'flex', alignItems: 'center' },
+            cellRenderer: (p) => (
+                <div style={{ lineHeight: '1.4', padding: '8px 0' }}>{p.value}</div>
+            )
         },
         {
             field: 'project',
@@ -177,7 +292,7 @@ const HistoryGrid = ({ sessions, onEdit }) => {
         {
             field: 'approvedState',
             headerName: 'Approval',
-            width: 120,
+            width: 130,
             cellStyle: { display: 'flex', alignItems: 'center', justifyContent: 'center' },
             cellRenderer: (p) => {
                 const s = String(p.value || 'Pending').toLowerCase();
@@ -198,26 +313,16 @@ const HistoryGrid = ({ sessions, onEdit }) => {
             }
         },
         {
-            headerName: 'Action',
-            width: 90,
-            cellStyle: { display: 'flex', alignItems: 'center', justifyContent: 'center' },
+            headerName: '',
+            width: 60,
+            pinned: 'right', // Pin to right for better UX
+            cellStyle: { display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'visible' }, // Overflow visible for dropdown
             cellRenderer: (p) => (
-                <button
-                    onClick={() => p.context.onEdit(p.data)}
-                    style={{
-                        padding: '6px 14px',
-                        background: 'transparent',
-                        color: '#2563EB',
-                        border: '1px solid #2563EB',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        fontSize: '0.75rem',
-                        fontWeight: 700,
-                        textTransform: 'uppercase'
-                    }}
-                >
-                    Edit
-                </button>
+                <ActionMenu
+                    data={p.data}
+                    onEdit={p.context.onEdit}
+                    onDelete={p.context.onDelete}
+                />
             ),
             sortable: false,
         }
@@ -270,7 +375,7 @@ const HistoryGrid = ({ sessions, onEdit }) => {
                 headerHeight={48}
                 pagination={true}
                 paginationPageSize={20}
-                context={{ onEdit }}
+                context={{ onEdit, onDelete }}
                 // Header Row Config
                 isFullWidthRow={isFullWidthRow}
                 fullWidthCellRenderer={fullWidthCellRenderer}

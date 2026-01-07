@@ -1,10 +1,14 @@
 import TrackerApp from './components/TrackerApp';
 import './App.css';
 
+import { BrowserRouter } from 'react-router-dom';
+
 function App() {
   return (
     <div className="App">
-      <TrackerApp />
+      <BrowserRouter>
+        <TrackerApp />
+      </BrowserRouter>
     </div>
   );
 }

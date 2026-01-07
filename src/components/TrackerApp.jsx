@@ -6,8 +6,12 @@ import HistoryGrid from './HistoryGrid';
 import EndSessionModal from './EndSessionModal';
 import EditSessionModal from './EditSessionModal';
 import StatsCard from './StatsCard';
-import { fetchData, createRecord, updateRecord } from '../api';
+import { fetchData, createRecord, updateRecord, deleteRecord } from '../api';
 import UserNameModal from './UserNameModal';
+
+import DeleteConfirmationModal from './DeleteConfirmationModal';
+import CheckInModal from './CheckInModal';
+import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 
 
 
@@ -25,6 +29,91 @@ const TrackerApp = () => {
     // Edit Modal State
     const [editSession, setEditSession] = useState(null);
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+
+    // Delete Modal State
+    const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+    const [deleteTargetId, setDeleteTargetId] = useState(null);
+
+    // Notification State
+    const [reminderInterval, setReminderInterval] = useState(() => {
+        const saved = localStorage.getItem('reminderInterval');
+        return saved ? parseInt(saved) : 0;
+    }); // Default Never or Saved
+    const [isCheckInModalOpen, setIsCheckInModalOpen] = useState(false);
+
+    // Save Reminder Preference
+    useEffect(() => {
+        localStorage.setItem('reminderInterval', reminderInterval);
+    }, [reminderInterval]);
+
+    // Permission Request
+    useEffect(() => {
+        if ('Notification' in window && Notification.permission !== 'granted') {
+            Notification.requestPermission();
+        }
+    }, []);
+
+    // Reminder Polling
+    useEffect(() => {
+        if (!activeSession || activeSession.status !== 'In Progress' || reminderInterval === 0) return;
+
+        const checkReminder = () => {
+            const now = new Date();
+            // Store `lastReminderTime` in session.
+            const baseTimeStr = activeSession.lastReminderTime || activeSession.startTimeFull || activeSession.startTimeStr;
+            const baseTime = new Date(baseTimeStr);
+
+            // If invalid, skip
+            if (isNaN(baseTime.getTime())) return;
+
+            if (activeSession.status === 'Paused') return;
+
+            const elapsedSeconds = (now - baseTime) / 1000;
+
+            if (elapsedSeconds >= reminderInterval) {
+                // TRIGGER NOTIFICATION
+                sendNotification();
+
+                // Update lastReminderTime immediately prevent loop
+                updateSessionReminderTime();
+            }
+        };
+
+        // 1. Run IMMEDIATELY on load/state change (The "Catch-up" Fix)
+        checkReminder();
+
+        // 2. High Precision Polling (Every 1 second)
+        const interval = setInterval(checkReminder, 1000);
+
+        return () => clearInterval(interval);
+    }, [activeSession, reminderInterval]);
+
+    const sendNotification = () => {
+        if (Notification.permission === 'granted') {
+            const n = new Notification("Still working?", {
+                body: `You've been active for ${reminderInterval} minutes. Click to check in.`,
+                icon: '/favicon.ico', // optional
+                tag: 'check-in' // prevent duplicates
+            });
+            n.onclick = () => {
+                window.focus();
+                setIsCheckInModalOpen(true);
+                n.close();
+            };
+        }
+        // Also fallback to open modal if they are looking at screen
+        setIsCheckInModalOpen(true);
+    };
+
+    const updateSessionReminderTime = () => {
+        if (!activeSession) return;
+        const updated = {
+            ...activeSession,
+            lastReminderTime: new Date().toISOString()
+        };
+        setActiveSession(updated);
+        localStorage.setItem('activeWorkSession', JSON.stringify(updated));
+    };
 
     // 1. Initial Load & Calculate Stats
     useEffect(() => {
@@ -123,20 +212,22 @@ const TrackerApp = () => {
     };
 
     // 3. Start Work
-    const handleStartWork = async () => {
+    const handleStartWork = async (customStartTime = null) => {
         if (!userName) {
             setIsUserModalOpen(true);
             return;
         }
 
         const now = new Date();
+        const start = customStartTime || now;
+
         // USE LOCAL DATE
-        const year = now.getFullYear();
-        const month = String(now.getMonth() + 1).padStart(2, '0');
-        const day = String(now.getDate()).padStart(2, '0');
+        const year = start.getFullYear();
+        const month = String(start.getMonth() + 1).padStart(2, '0');
+        const day = String(start.getDate()).padStart(2, '0');
         const dateStr = `${year}-${month}-${day}`;
 
-        const timeStr = now.toTimeString().slice(0, 5); // HH:MM
+        const timeStr = start.toTimeString().slice(0, 5); // HH:MM
 
         // Calculate Next Session Number for TODAY
         // Filter mySessions for today's records specifically (Robust Match)
@@ -155,16 +246,55 @@ const TrackerApp = () => {
             userName: userName,
             sessionNo: nextSessionNo.toString(),
             startTime: timeStr,
-            startTimeFull: now.toISOString(), // Store full ISO
-            status: 'In Progress'
+            startTime: timeStr,
+            startTimeFull: start.toISOString(), // Store full ISO
+            status: 'In Progress',
+            totalPausedSeconds: 0,
+            lastPauseTime: null,
+            lastReminderTime: start.toISOString(), // Initialize reminder baseline
+            reminderInterval: reminderInterval // Store preference in session for persistence if needed, but we use local state for now
         };
+
 
         setActiveSession(newLocalSession);
         localStorage.setItem('activeWorkSession', JSON.stringify(newLocalSession));
     };
 
-    // 4. End Work
+    // 4. Pause Work
+    const handlePauseWork = () => {
+        if (!activeSession) return;
+        const updatedSession = {
+            ...activeSession,
+            lastPauseTime: new Date().toISOString(),
+            status: 'Paused'
+        };
+        setActiveSession(updatedSession);
+        localStorage.setItem('activeWorkSession', JSON.stringify(updatedSession));
+    };
+
+    // 5. Resume Work
+    const handleResumeWork = () => {
+        if (!activeSession || !activeSession.lastPauseTime) return;
+
+        const now = new Date();
+        const pauseStart = new Date(activeSession.lastPauseTime);
+        const pauseSeconds = Math.floor((now - pauseStart) / 1000);
+
+        const updatedSession = {
+            ...activeSession,
+            lastPauseTime: null,
+            totalPausedSeconds: (activeSession.totalPausedSeconds || 0) + pauseSeconds,
+            status: 'In Progress'
+        };
+        setActiveSession(updatedSession);
+        localStorage.setItem('activeWorkSession', JSON.stringify(updatedSession));
+    };
+
+    // 6. End Work
     const handleEndClick = () => {
+        // If paused, we resume momentarily to calculate final correct duration or just end it?
+        // Plan: If paused, the final "gap" is also pause time, not work time.
+        // So we need to account for that in handleFinishSession.
         setIsEndModalOpen(true);
     };
 
@@ -175,104 +305,388 @@ const TrackerApp = () => {
         const now = new Date();
         const endTimeStr = now.toTimeString().slice(0, 5); // HH:MM
 
-        // Calculate duration in SECONDS
-        let durationSeconds = 0;
+        // Parse Start Time
+        let startDateObj = new Date();
         if (activeSession.startTimeFull) {
-            const start = new Date(activeSession.startTimeFull);
-            const diffMs = now - start;
-            durationSeconds = Math.floor(diffMs / 1000);
-        } else if (activeSession.startTime) {
-            const today = new Date().toISOString().slice(0, 10);
-            const start = new Date(`${today}T${activeSession.startTime}:00`);
-            const end = new Date(`${today}T${endTimeStr}:00`);
-            durationSeconds = Math.floor((end - start) / 1000);
+            startDateObj = new Date(activeSession.startTimeFull);
+        } else {
+            // Fallback for missing ISO
+            const y = now.getFullYear();
+            const m = String(now.getMonth() + 1).padStart(2, '0');
+            const d = String(now.getDate()).padStart(2, '0');
+            startDateObj = new Date(`${y}-${m}-${d}T${activeSession.startTime}:00`);
         }
 
-        if (durationSeconds < 0) durationSeconds = 0;
+        // Check for Overnight (Start Date != End Date)
+        const sYear = startDateObj.getFullYear();
+        const sMonth = String(startDateObj.getMonth() + 1).padStart(2, '0');
+        const sDay = String(startDateObj.getDate()).padStart(2, '0');
+        const startDateStr = `${sYear}-${sMonth}-${sDay}`;
 
-        const durationStr = formatDurationString(durationSeconds);
+        const eYear = now.getFullYear();
+        const eMonth = String(now.getMonth() + 1).padStart(2, '0');
+        const eDay = String(now.getDate()).padStart(2, '0');
+        const endDateStr = `${eYear}-${eMonth}-${eDay}`;
 
-        const finalPayload = {
-            date: activeSession.date,
+        const isOvernight = startDateStr !== endDateStr;
+
+        // Base Data
+        const basePayload = {
             userName: activeSession.userName,
-            sessionNo: activeSession.sessionNo,
-            startTime: activeSession.startTime,
-            endTime: endTimeStr,
-            duration: durationStr,
             workDescription: modalData.workDescription,
             project: modalData.project,
             category: modalData.category,
-            status: 'Completed',
-            approvedState: 'Pending',
+            status: modalData.status || 'Completed',
+            approvedState: modalData.approvedState || 'Pending',
             approvedBy: ''
         };
 
-        try {
-            const res = await createRecord(finalPayload);
-            setIsEndModalOpen(false);
-            setActiveSession(null);
-            localStorage.removeItem('activeWorkSession');
+        setIsEndModalOpen(false);
+        setActiveSession(null);
+        localStorage.removeItem('activeWorkSession');
 
-            // OPTIMISTIC UPDATE: Add to sessions immediately so "Start Work" sees it
-            // This prevents the "Session 3 again" bug if Google Sheets is slow
-            const newOptimisticRecord = {
-                ...finalPayload,
-                recordId: res.recordId || Date.now(), // Use returned ID or temp
-                status: 'Completed' // Ensure status is set
+        if (isOvernight) {
+            console.log("Overnight Session Detected! Splitting...");
+
+            // --- Part 1: Start -> 23:59 (Start Date) ---
+            // Calculate duration: Start -> 23:59:59
+            const endOfDay = new Date(startDateObj);
+            endOfDay.setHours(23, 59, 59, 999);
+            let dur1 = Math.floor((endOfDay - startDateObj) / 1000);
+            if (dur1 < 0) dur1 = 0;
+
+            const payload1 = {
+                ...basePayload,
+                date: startDateStr,
+                sessionNo: activeSession.sessionNo,
+                startTime: activeSession.startTime,
+                endTime: '23:59',
+                duration: formatDurationString(dur1)
             };
 
-            setSessions(prev => [newOptimisticRecord, ...prev]);
+            // --- Part 2: 00:00 -> End (End Date) ---
+            // Calculate duration: 00:00 -> Now
+            const startOfDay = new Date(now);
+            startOfDay.setHours(0, 0, 0, 0);
+            let dur2 = Math.floor((now - startOfDay) / 1000);
+            if (dur2 < 0) dur2 = 0;
 
-            // Still reload in background to confirm
-            setTimeout(loadData, 1000);
-        } catch (e) {
-            alert("Error ending session: " + e.message);
+            // Determine Session No for Day 2
+            // Since we might not have Day 2 loaded, we check if we have any sessions for endDateStr locally
+            const nextDaySessions = sessions.filter(s => s.date === endDateStr);
+            const nextDayNums = nextDaySessions.map(s => parseInt(s.sessionNo) || 0);
+            const nextDayNo = nextDayNums.length > 0 ? Math.max(...nextDayNums) + 1 : 1;
+
+            const payload2 = {
+                ...basePayload,
+                date: endDateStr,
+                sessionNo: nextDayNo.toString(),
+                startTime: '00:00',
+                endTime: endTimeStr,
+                duration: formatDurationString(dur2)
+            };
+
+            // Optimistic UI
+            const t1 = Date.now();
+            const t2 = t1 + 1;
+            setSessions(prev => [
+                { ...payload2, recordId: t2, status: 'Completed' },
+                { ...payload1, recordId: t1, status: 'Completed' },
+                ...prev
+            ]);
+
+            // Background Sync
+            try {
+                // Determine order? Usually FIFO or just parallel.
+                await createRecord(payload1);
+                await createRecord(payload2);
+                loadData();
+            } catch (e) {
+                console.error("Overnight Save Error", e);
+                alert("Saved locally, sync failed: " + e.message);
+            }
+
+        } else {
+
+            // --- Standard Single Day ---
+            let durationSeconds = Math.floor((now - startDateObj) / 1000);
+
+            // Subtract previously accumulated pauses
+            if (activeSession.totalPausedSeconds) {
+                durationSeconds -= activeSession.totalPausedSeconds;
+            }
+
+            // If currently paused, subtract the current ongoing pause duration too
+            // (Because that time from lastPauseTime -> Now is NOT work)
+            if (activeSession.lastPauseTime) {
+                const pauseStart = new Date(activeSession.lastPauseTime);
+                const currentPauseDuration = Math.floor((now - pauseStart) / 1000);
+                durationSeconds -= currentPauseDuration;
+            }
+
+            if (durationSeconds < 0) durationSeconds = 0;
+
+            const finalPayload = {
+                ...basePayload,
+                date: startDateStr, // Robust date
+                sessionNo: activeSession.sessionNo,
+                startTime: activeSession.startTime,
+                endTime: endTimeStr,
+                duration: formatDurationString(durationSeconds)
+            };
+
+            // Optimistic
+            const tempId = Date.now();
+            setSessions(prev => [{ ...finalPayload, recordId: tempId, status: 'Completed' }, ...prev]);
+
+            try {
+                const res = await createRecord(finalPayload);
+                if (res && res.recordId) {
+                    setSessions(prev => prev.map(s => s.recordId === tempId ? { ...s, recordId: res.recordId } : s));
+                }
+                loadData();
+            } catch (e) {
+                console.error(e);
+                alert("Sync Error: " + e.message);
+            }
         }
     };
 
 
     // 6. Action Handlers
+    const handleManualAdd = () => {
+        // Create template for new session
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const dateStr = `${year}-${month}-${day}`;
+        const timeStr = now.toTimeString().slice(0, 5);
+
+        // Ideally calculate next session No, but for manual entry just use 'Auto' or last + 1 of today
+        // We will just set it based on current 'sessions' state for today
+        const sessionsToday = sessions.filter(s => s.date === dateStr);
+        const sessionNums = sessionsToday.map(s => parseInt(s.sessionNo) || 0);
+        const nextNo = sessionNums.length > 0 ? Math.max(...sessionNums) + 1 : 1;
+
+        const newTemplate = {
+            // No recordId => New
+            date: dateStr,
+            userName: userName,
+            sessionNo: nextNo.toString(),
+            startTime: timeStr,
+            endTime: timeStr, // Default to 0 duration
+            duration: '0 sec',
+            workDescription: '',
+            project: '',
+            category: '',
+            status: 'Completed',
+            approvedState: 'Pending'
+        };
+
+        setEditSession(newTemplate);
+        setIsEditModalOpen(true);
+    };
+
     const handleEditClick = (session) => {
         setEditSession(session);
         setIsEditModalOpen(true);
     };
 
-    const handleUpdateConfirm = async (updatedData) => {
-        // TEST MODE: Local Update Only
-        // If we are forcing test data, we should update local state to visualize changes
-        // checking if loadData is hijacked (simple check: if we have test data loaded)
-        // For now, let's just assume if it has no valid recordId (or if we want to support it generally)
+    const handleUpdateConfirm = async (formData) => {
+        // Distinguish Create vs Update
+        const isNew = !formData.recordId;
 
-        // Simpler: Just try API, if it fails (due to fake ID), fallback to local? 
-        // Or better: Explicitly handle test updates to show the UI behavior.
+        // 1. Immediate UI Close
+        setIsEditModalOpen(false);
+        setEditSession(null);
 
-        try {
-            // Check if we are in the "Test Data" state (hardcoded for this session)
-            // We can check if the recordId looks like our test IDs (undefined or specific)
-            const isTestRecord = !updatedData.recordId || String(updatedData.recordId).startsWith('test-');
+        // Check for Overnight Manual Entry (Only for New Records to keep it simple)
+        // Condition: EndTime < StartTime implies crossing midnight into next day
+        const isOvernight = isNew && formData.endTime && formData.startTime && formData.endTime < formData.startTime;
 
+        if (isOvernight) {
+            // --- SPLIT LOGIC ---
+            const dateStr = formData.date;
 
+            // Part 1: Date 1, Start -> 23:59
+            const dur1Sec = calculateDurationSeconds(formData.startTime, '23:59');
+            const record1 = {
+                ...formData,
+                endTime: '23:59',
+                duration: formatDurationString(dur1Sec),
+                recordId: Date.now()
+            };
 
-            await updateRecord(updatedData);
-            setEditSession(null);
-            setIsEditModalOpen(false);
-            // Refresh
-            setTimeout(loadData, 1000);
-        } catch (e) {
-            alert("Error updating: " + e.message);
+            // Part 2: Date 2 (Next Day), 00:00 -> End
+            const d = new Date(dateStr);
+            d.setDate(d.getDate() + 1); // Next Day
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            const nextDateStr = `${y}-${m}-${day}`;
+
+            // Calc Session No for next day
+            const nextDaySessions = sessions.filter(s => s.date === nextDateStr);
+            const nextNums = nextDaySessions.map(s => parseInt(s.sessionNo) || 0);
+            const nextNo = nextNums.length > 0 ? Math.max(...nextNums) + 1 : 1;
+
+            const dur2Sec = calculateDurationSeconds('00:00', formData.endTime);
+            const record2 = {
+                ...formData,
+                date: nextDateStr,
+                sessionNo: nextNo.toString(),
+                startTime: '00:00',
+                endTime: formData.endTime,
+                duration: formatDurationString(dur2Sec),
+                recordId: Date.now() + 1
+            };
+
+            // Optimistic
+            setSessions(prev => [record2, record1, ...prev]);
+
+            try {
+                await createRecord(record1);
+                await createRecord(record2);
+                loadData();
+            } catch (e) {
+                alert("Split save error: " + e.message);
+                loadData();
+            }
+
+        } else if (isNew) {
+            // --- STANDARD CREATE ---
+            const tempId = Date.now();
+            const newRecord = { ...formData, recordId: tempId, status: formData.status || 'Completed' };
+            setSessions(prev => [newRecord, ...prev]);
+
+            try {
+                const res = await createRecord(formData);
+                if (res && res.recordId) {
+                    setSessions(prev => prev.map(s =>
+                        s.recordId === tempId ? { ...s, recordId: res.recordId } : s
+                    ));
+                }
+                loadData();
+            } catch (e) {
+                console.error(e);
+                alert("Error creating record: " + e.message);
+                loadData();
+            }
+        } else {
+            // --- UPDATE (Edit) ---
+            try {
+                setSessions(prev => prev.map(s => s.recordId === formData.recordId ? formData : s));
+                await updateRecord(formData);
+                setTimeout(loadData, 500);
+            } catch (e) {
+                alert("Error updating: " + e.message);
+                loadData();
+            }
         }
     };
 
-    const handleDeleteConfirm = async (recordId) => {
+    // Internal helper for manual split duration
+    const calculateDurationSeconds = (start, end) => {
+        const today = new Date().toISOString().slice(0, 10);
+        const s = new Date(`${today}T${start}:00`);
+        const e = new Date(`${today}T${end}:00`);
+        const diff = (e - s) / 1000;
+        return diff > 0 ? diff : 0;
+    };
+
+    const initiateDelete = (recordId) => {
+        setDeleteTargetId(recordId);
+        setIsDeleteModalOpen(true);
+    };
+
+    const executeDelete = async () => {
+        if (!deleteTargetId) return;
+        const recordId = deleteTargetId;
+
+        // Find session to get date
+        const sessionToDelete = sessions.find(s => s.recordId === recordId);
+        if (!sessionToDelete) {
+            console.error("Session not found for deletion");
+            return;
+        }
+
+        // 1. OPTIMISTIC UI UPDATE
+
+        // A. Close Modals Immediately
+        setIsDeleteModalOpen(false);
+        setEditSession(null);
+        setIsEditModalOpen(false);
+
+        // B. Update Local State Immediately (Remove item)
+        // We also need to predict the renumbering locally for the best experience
+        const otherSessions = sessions.filter(s => s.recordId !== recordId);
+
+        // Simple renumber logic for optimistic state
+        const sameDaySessions = otherSessions.filter(s => s.date === sessionToDelete.date);
+
+        // Sort
+        sameDaySessions.sort((a, b) => {
+            if (!a.startTime || !b.startTime) return 0;
+            return a.startTime.localeCompare(b.startTime);
+        });
+
+        // Apply new numbers locally
+        const renumberedDaySessions = sameDaySessions.map((s, index) => ({
+            ...s,
+            sessionNo: (index + 1).toString()
+        }));
+
+        // Merge back into main list
+        const finalOptimisticSessions = otherSessions.map(s => {
+            if (s.date === sessionToDelete.date) {
+                const updated = renumberedDaySessions.find(r => r.recordId === s.recordId);
+                return updated || s;
+            }
+            return s;
+        });
+
+        setSessions(finalOptimisticSessions);
 
 
+        // 2. BACKGROUND SYNC
         try {
+            // Delete the target record
             await deleteRecord(recordId);
-            setEditSession(null);
-            setIsEditModalOpen(false);
-            setTimeout(loadData, 1000);
+
+            // Renumber Logic: Find remaining sessions for the SAME DATE (From API perspective)
+            // Note: We use the logic on the *original* session data context or fetched, 
+            // but here we just need to ensure the backend is updated.
+
+            // To be safe, let's use the local 'sessions' snapshot before delete 
+            // (already captured in sessionToDelete and its date)
+            // Actually, we can just process the updates based on optimization.
+
+            // Re-fetch or use logic? 
+            // Let's stick to the renumber logic we had, but run it in background.
+
+            const updates = [];
+            renumberedDaySessions.forEach(s => {
+                // If the session number changed from what it was in the original 'sessions' state
+                // We need to send update. 
+                // We can check against the *original* sessions list to see if 'sessionNo' differs.
+                const original = sessions.find(os => os.recordId === s.recordId);
+                if (original && String(original.sessionNo) !== String(s.sessionNo)) {
+                    updates.push(s);
+                }
+            });
+
+            if (updates.length > 0) {
+                console.log(`Background Renumbering ${updates.length} sessions...`);
+                await Promise.all(updates.map(u => updateRecord(u)));
+            }
+
+            // 3. Final Refresh to sync everything
+            loadData();
         } catch (e) {
-            alert("Error deleting: " + e.message);
+            console.error(e);
+            alert("Background Sync Error: " + e.message + ". Please refresh.");
+            loadData(); // Revert to server state on error
         }
     };
 
@@ -282,16 +696,11 @@ const TrackerApp = () => {
         setIsUserModalOpen(false);
     };
 
-    // View State
-    const [currentView, setCurrentView] = useState('tracker');
-    const [systemDate, setSystemDate] = useState('');
+    // View State REMOVED
+    // const [currentView, setCurrentView] = useState('tracker');
 
-    useEffect(() => {
-        // Set formatted system date for display
-        const now = new Date();
-        const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
-        setSystemDate(now.toLocaleDateString(undefined, options));
-    }, []);
+    const navigate = useNavigate();
+    const location = useLocation();
 
     return (
         <DashboardLayout
@@ -300,26 +709,30 @@ const TrackerApp = () => {
         >
             <div className="fade-in-entry">
                 {/* Navigation / Header Area */}
-                <div style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '1rem' }}>
 
-                    {/* System Date Display */}
-                    <div style={{
-                        fontSize: '1.1rem',
-                        fontWeight: 700,
-                        color: 'var(--text-primary)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.5rem'
-                    }}>
-                        <span style={{ color: 'var(--accent-color)' }}>📅</span>
-                        {systemDate}
+                    {/* Add Record Button (Visible on both Dashboard & History) */}
+                    <button
+                        onClick={handleManualAdd}
+                        style={{
+                            padding: '0.75rem 1.5rem',
+                            backgroundColor: 'white',
+                            color: 'var(--primary-color)',
+                            borderRadius: '8px',
+                            border: '1px solid var(--primary-color)',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem'
+                        }}
+                    >
+                        <span>+ Add Record</span>
+                    </button>
 
-
-                    </div>
-
-                    {currentView === 'tracker' ? (
+                    {location.pathname === '/' ? (
                         <button
-                            onClick={() => setCurrentView('history')}
+                            onClick={() => navigate('/history')}
                             style={{
                                 padding: '0.75rem 1.5rem',
                                 backgroundColor: 'var(--primary-color)',
@@ -338,7 +751,7 @@ const TrackerApp = () => {
                         </button>
                     ) : (
                         <button
-                            onClick={() => setCurrentView('tracker')}
+                            onClick={() => navigate('/')}
                             style={{
                                 padding: '0.75rem 1.5rem',
                                 backgroundColor: 'white',
@@ -357,28 +770,32 @@ const TrackerApp = () => {
                     )}
                 </div>
 
-                {/* TRACKER VIEW */}
-                {currentView === 'tracker' && (
-                    <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: '2rem', alignItems: 'stretch' }}>
-                        <TimerCard
-                            activeSession={activeSession}
-                            onStart={handleStartWork}
-                            onEnd={handleEndClick}
+                <Routes>
+                    <Route path="/" element={
+                        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: '2rem', alignItems: 'stretch' }}>
+                            <TimerCard
+                                activeSession={activeSession}
+                                onStart={handleStartWork}
+                                onPause={handlePauseWork}
+                                onResume={handleResumeWork}
+                                onEnd={handleEndClick}
+                                reminderInterval={reminderInterval}
+                                setReminderInterval={setReminderInterval}
+                            />
+                            <StatsCard
+                                totalSeconds={todayStats.seconds}
+                                sessionCount={todayStats.count}
+                            />
+                        </div>
+                    } />
+                    <Route path="/history" element={
+                        <HistoryGrid
+                            sessions={sessions}
+                            onEdit={handleEditClick}
+                            onDelete={initiateDelete}
                         />
-                        <StatsCard
-                            totalSeconds={todayStats.seconds}
-                            sessionCount={todayStats.count}
-                        />
-                    </div>
-                )}
-
-                {/* HISTORY VIEW */}
-                {currentView === 'history' && (
-                    <HistoryGrid
-                        sessions={sessions}
-                        onEdit={handleEditClick}
-                    />
-                )}
+                    } />
+                </Routes>
             </div>
 
             <EndSessionModal
@@ -392,7 +809,13 @@ const TrackerApp = () => {
                 session={editSession}
                 onClose={() => setIsEditModalOpen(false)}
                 onSave={handleUpdateConfirm}
-                onDelete={handleDeleteConfirm}
+                onDelete={initiateDelete}
+            />
+
+            <DeleteConfirmationModal
+                isOpen={isDeleteModalOpen}
+                onClose={() => setIsDeleteModalOpen(false)}
+                onConfirm={executeDelete}
             />
 
             <UserNameModal
@@ -400,6 +823,19 @@ const TrackerApp = () => {
                 currentName={userName}
                 onSave={handleSaveUser}
                 onClose={() => userName && setIsUserModalOpen(false)} // Only allow close if name exists
+            />
+
+            <CheckInModal
+                isOpen={isCheckInModalOpen}
+                onContinue={() => {
+                    setIsCheckInModalOpen(false);
+                    // Reset reminder timer
+                    updateSessionReminderTime();
+                }}
+                onStop={() => {
+                    setIsCheckInModalOpen(false);
+                    handleEndClick();
+                }}
             />
         </DashboardLayout>
     );
